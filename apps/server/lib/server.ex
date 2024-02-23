@@ -1,6 +1,6 @@
-defmodule Exocks do
+defmodule Server do
   @moduledoc """
-  Documentation for `Exocks`.
+  Documentation for `Server`.
   """
 
   @doc """
@@ -8,7 +8,7 @@ defmodule Exocks do
 
   ## Examples
 
-      iex> Exocks.hello()
+      iex> Server.hello()
       :world
 
   """
