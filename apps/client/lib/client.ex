@@ -5,8 +5,8 @@ defmodule Client do
 
   require Logger
 
-  @client_port 8899
-  @server_port 6716
+  @client_port Application.compile_env(:client, :local_port)
+  @server_port Application.compile_env(:client, :remote_port)
   @timeout 30 * 1000
 
   @socks5_version 0x05
