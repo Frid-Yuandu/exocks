@@ -6,6 +6,7 @@ defmodule Client do
   require Logger
 
   @client_port Application.compile_env(:client, :local_port)
+  @server_address Application.compile_env(:client, :remote_address)
   @server_port Application.compile_env(:client, :remote_port)
   @timeout 30 * 1000
 
@@ -24,13 +25,12 @@ defmodule Client do
     {:ok, local_sock} = :gen_tcp.accept(socket)
     Logger.debug("accept local socket")
 
-    Logger.debug(
-      "try to connect to remote proxy server #{proxy_server_address() |> inspect_addr}:#{@server_port}"
-    )
+    Logger.debug("try to connect to remote proxy server
+      #{@server_address |> inspect_addr}:#{@server_port}")
 
     {:ok, remote_sock} =
       :gen_tcp.connect(
-        proxy_server_address(),
+        @server_address,
         @server_port,
         [:binary, active: false, reuseaddr: true],
         @timeout
@@ -45,13 +45,14 @@ defmodule Client do
     Logger.info("negotiate successfully")
 
     # request
-    Logger.debug("start request to destination: #{dst_address() |> inspect_addr}:443")
+    Logger.debug("wait for proxy request")
+    {:ok, dst} = :gen_tcp.recv(local_sock, 0)
+    Logger.debug("start request to destination: #{dst |> inspect_addr}:443")
 
     :ok =
       :gen_tcp.send(
         remote_sock,
-        <<@socks5_version, @tcp_connect, 0x00, @ipv4>> <>
-          pack_ipv4(dst_address()) <> <<443::16>>
+        <<@socks5_version, @tcp_connect, 0x00, @ipv4>> <> dst <> <<443::16>>
       )
 
     Logger.debug("send request to proxy server")
@@ -67,7 +68,7 @@ defmodule Client do
         "address: #{[a1, a2, a3, a4] |> Enum.join(".")}, port: #{port}"
     )
 
-    ^rest = pack_ipv4(proxy_server_address()) <> <<@server_port::16>>
+    ^rest = pack_ipv4(@server_address) <> <<@server_port::16>>
     Logger.info("request successfully")
 
     Logger.debug("start communicating with destination")
@@ -95,15 +96,11 @@ defmodule Client do
     |> Enum.reduce(fn acc, x -> x <> acc end)
   end
 
-  defp proxy_server_address do
-    {127, 0, 0, 1}
-  end
-
-  def dst_address do
-    {183, 2, 172, 42}
-  end
-
   defp inspect_addr(address) when is_tuple(address) do
     address |> Tuple.to_list() |> Enum.join(".")
+  end
+
+  defp inspect_addr(address) when is_binary(address) do
+    address |> to_charlist |> Enum.join(".")
   end
 end

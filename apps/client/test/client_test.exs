@@ -32,6 +32,8 @@ defmodule ClientTest do
         [:binary, active: false, reuseaddr: true]
       )
 
+    :gen_tcp.send(local, <<183, 2, 172, 42>>)
+
     :gen_tcp.send(local, "ping")
     assert {:ok, "pong"} = :gen_tcp.recv(local, 0)
 
