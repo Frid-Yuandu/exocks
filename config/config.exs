@@ -9,10 +9,35 @@
 # move said applications out of the umbrella.
 import Config
 
-# Sample configuration:
-#
-#     config :logger, :console,
-#       level: :info,
-#       format: "$date $time [$level] $metadata$message\n",
-#       metadata: [:user_id]
-#
+config :client,
+  local_port: 8899,
+  remote_address: {127, 0, 0, 1},
+  remote_port: 6716
+
+config :server,
+  local_port: 6716
+
+config :logger,
+  backends: [
+    :console,
+    {LoggerFileBackend, :client_log},
+    {LoggerFileBackend, :server_log}
+  ]
+
+config :logger, :console,
+  level: :debug,
+  format: "$time [$level] $message\n"
+
+config :logger, :client_log,
+  path: "client.log",
+  level: :debug,
+  format: "$time [$level] $message\n\t$metadata\n",
+  metadata: :all,
+  metadata_filter: [application: :client]
+
+config :logger, :server_log,
+  path: "server.log",
+  level: :debug,
+  format: "$time [$level] $message\n\t$metadata\n",
+  metadata: :all,
+  metadata_filter: [application: :server]
