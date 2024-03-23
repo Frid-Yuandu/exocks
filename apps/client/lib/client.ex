@@ -8,7 +8,8 @@ defmodule Client do
   @client_port Application.compile_env(:client, :local_port)
   @server_address Application.compile_env(:client, :remote_address)
   @server_port Application.compile_env(:client, :remote_port)
-  @timeout 30 * 1000
+  @accept_timeout 1 * 1000
+  @timeout 10 * 1000
 
   @socks5_version 0x05
   @no_auth 0x00
@@ -17,27 +18,58 @@ defmodule Client do
 
   @tcp_connect 0x01
   @ipv4 0x01
-  # @ipv6 0x04
   # @domain_name 0x03
+  # @ipv6 0x04
 
   def start do
+    Logger.debug("starting client...")
+    pid = spawn(&run/0)
+    Logger.debug("client has started")
+    send(pid, :listen)
+    pid
+  end
+
+  def stop(pid) do
+    Logger.debug("stop client")
+    send(pid, :stop)
+    :ok
+  end
+
+  def run(sock \\ nil) do
+    receive do
+      {:accept, socket} ->
+        accept(socket)
+        socket
+
+      :listen ->
+        listen()
+        sock
+
+      :stop ->
+        :gen_tcp.close(sock)
+        Logger.debug("server stop listenning")
+        sock
+    end
+    |> run()
+  end
+
+  def listen do
     {:ok, socket} = :gen_tcp.listen(@client_port, [:binary, active: false, reuseaddr: true])
     Logger.debug("listening local client_port: #{@client_port}, set active false")
-
-    accept(socket)
+    send(self(), {:accept, socket})
   end
 
   @doc """
   accept loops to accept local socket, spawn a new process to handle each of them.
   """
   def accept(socket) do
-    {:ok, local_sock} = :gen_tcp.accept(socket)
-    pid = spawn(__MODULE__, :proxy, [local_sock])
-    :gen_tcp.controlling_process(local_sock, pid)
+    with {:ok, local_sock} <- :gen_tcp.accept(socket, @accept_timeout) do
+      pid = spawn(__MODULE__, :proxy, [local_sock])
+      :gen_tcp.controlling_process(local_sock, pid)
+      Logger.debug("accept local socket")
+    end
 
-    Logger.debug("accept local socket")
-
-    accept(socket)
+    send(self(), {:accept, socket})
   end
 
   def proxy(local_sock) do
@@ -103,24 +135,24 @@ defmodule Client do
 
         :stop
 
-      {:ok, <<_, _rest::binary>>} ->
-        Logger.error(%{
+      {:ok, <<ver, _rest::binary>>} when ver != @socks5_version ->
+        Logger.error(
           reason: "invalid socks version",
           from: "negotiation receive response"
-        })
+        )
 
         :stop
 
       {:error, {:timeout, _}} ->
-        Logger.error(%{
+        Logger.error(
           reason: "send request timeout",
           from: "negotiation send request"
-        })
+        )
 
         {:retry, 3}
 
       {:error, :timeout} ->
-        Logger.error("negotiate failed: receive negotiation response timeout")
+        Logger.warning("negotiate failed: receive negotiation response timeout")
         {:retry, 3}
 
       {:error, reason} ->
@@ -132,7 +164,7 @@ defmodule Client do
   def forward(dst, src) do
     with {:ok, packet} <- :gen_tcp.recv(src, 0),
          :ok <- :gen_tcp.send(dst, packet) do
-      forward(src, dst)
+      forward(dst, src)
     else
       {:error, :closed} ->
         Logger.debug("forward finished")

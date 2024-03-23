@@ -32,12 +32,12 @@ config :logger, :client_log,
   path: "client.log",
   level: :debug,
   format: "$time [$level] $message\n\t$metadata\n",
-  metadata: :all,
+  metadata: [:line, :mfa, :pid],
   metadata_filter: [application: :client]
 
 config :logger, :server_log,
   path: "server.log",
   level: :debug,
   format: "$time [$level] $message\n\t$metadata\n",
-  metadata: :all,
+  metadata: [:line, :mfa, :pid],
   metadata_filter: [application: :server]

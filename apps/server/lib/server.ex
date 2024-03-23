@@ -16,10 +16,41 @@ defmodule Server do
   @ipv4 0x01
 
   def start do
+    Logger.debug("starting server...")
+    pid = spawn(&run/0)
+    Logger.debug("server has started")
+    send(pid, :listen)
+    pid
+  end
+
+  def stop(pid) do
+    Logger.debug("stop server")
+    send(pid, :stop)
+    :ok
+  end
+
+  def run(sock \\ nil) do
+    receive do
+      {:accept, socket} ->
+        accept(socket)
+        socket
+
+      :listen ->
+        listen()
+        sock
+
+      :stop ->
+        :gen_tcp.close(sock)
+        Logger.debug("server stop listenning")
+        sock
+    end
+    |> run()
+  end
+
+  def listen() do
     {:ok, socket} = :gen_tcp.listen(@server_port, [:binary, active: false, reuseaddr: true])
     Logger.debug("listening local server_port: #{@server_port}, set active false")
-
-    accept(socket)
+    send(self(), {:accept, socket})
   end
 
   def accept(socket) do
@@ -27,10 +58,9 @@ defmodule Server do
     pid = spawn(__MODULE__, :proxy, [client])
     :gen_tcp.controlling_process(client, pid)
 
-    {:ok, {ip, port}} = :inet.peername(client)
-    Logger.debug("accept client socket #{inspect_addr(ip)}:#{port}")
+    Logger.debug("accept client socket from#{inspect_peername(client)}")
 
-    accept(socket)
+    send(self(), {:accept, socket})
   end
 
   def proxy(client) do
@@ -44,7 +74,6 @@ defmodule Server do
     Logger.debug("start request to destination: #{a1}.#{a2}.#{a3}.#{a4}:#{port}")
 
     dst_addr = {a1, a2, a3, a4}
-    Logger.debug("try to connect to request destination #{dst_addr |> inspect_addr}")
 
     {:ok, dst} =
       :gen_tcp.connect(
@@ -74,41 +103,65 @@ defmodule Server do
   end
 
   def negotiate(sock) do
-    with {:ok, <<@socks5_version, n, rest::binary>>} <- :gen_tcp.recv(sock, 0, @timeout),
-         {true, methods} <-
-           {n == byte_size(rest) and @no_auth in :binary.bin_to_list(rest), rest},
+    with {:ok, <<@socks5_version, n, rest::binary>> = req} <- :gen_tcp.recv(sock, 0, @timeout),
+         Logger.debug("receive negotiate request: #{req |> inspect}"),
+         true <- validate_methods(n, rest),
          :ok <- :gen_tcp.send(sock, <<@socks5_version, @no_auth>>) do
-      Logger.debug("receive negotiate methods list: #{methods |> inspect}")
       Logger.info("negotiate successfully")
       :ok
     else
-      {false, rest} ->
-        Logger.warning("unacceptable or invalid negotiate methods list: #{rest |> inspect}")
+      {:ok, <<version, _::binary>>} ->
+        Logger.debug("invalid negotiate version: #{version}")
         :ok = :gen_tcp.send(sock, <<@socks5_version, @no_acceptable>>)
-        Logger.info("refuse negotiation")
+
+      false ->
+        :ok = :gen_tcp.send(sock, <<@socks5_version, @no_acceptable>>)
+
+      {:error, :timeout} ->
+        Logger.warning(reason: "receive timeout", from: "negotiate receive request")
+
+      # TODO: do sth.
+
+      {:error, {:timeout, _}} ->
+        Logger.error(reason: "send request timeout", from: "negotiate send response")
+        {:retry, 3}
     end
   end
 
   def forward(dst, src) do
-    with {:ok, packet} <- :gen_tcp.recv(src, 0),
-         :ok <- :gen_tcp.send(dst, packet) do
-      forward(src, dst)
+    with Logger.debug("receive from #{inspect_peername(src)}"),
+         {:receive, {:ok, packet}} <- {:receive, :gen_tcp.recv(src, 0)},
+         Logger.debug("send to #{inspect_peername(dst)}"),
+         {:send, :ok} <- {:send, :gen_tcp.send(dst, packet)} do
+      forward(dst, src)
     else
-      # TODO: match {:error, :ealready} {:error, :einval}
-
-      # the reason why `:ealready` occur is that there were two processes try to
-      # operate this socket at the same time.
-      {:error, :closed} ->
+      # TODO: match {:error, :einval}
+      {_, {:error, :closed}} ->
         Logger.debug("forward finished")
 
-      {:error, {:timeout, _}} ->
+      {:send, {:error, {:timeout, _}}} ->
         Logger.warning("forward timeout")
     end
   end
 
-  defp inspect_addr(address) when is_tuple(address) do
-    address
-    |> Tuple.to_list()
-    |> Enum.join(".")
+  def validate_methods(len, methods)
+      when is_integer(len) and is_binary(methods) do
+    if len != byte_size(methods) or
+         @no_auth not in :binary.bin_to_list(methods) do
+      Logger.debug("unacceptable negotiate methods, len: #{len}, methods: #{methods |> inspect}")
+      false
+    else
+      true
+    end
+  end
+
+  defp inspect_peername({ip, port})
+       when is_tuple(ip) and is_integer(port) do
+    (ip |> Tuple.to_list() |> Enum.join(".")) <> ":" <> to_string(port)
+  end
+
+  defp inspect_peername(sock) do
+    {:ok, peername} = :inet.peername(sock)
+    inspect_peername(peername)
   end
 end
