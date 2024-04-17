@@ -2,7 +2,7 @@ defmodule Client do
   @moduledoc """
   Documentation for `Client`.
   """
-
+  import Helper, only: [inspect_peername: 1]
   require Logger
 
   @client_port Application.compile_env(:client, :local_port)
@@ -74,7 +74,7 @@ defmodule Client do
 
   def proxy(local_sock) do
     Logger.debug("try to connect to remote proxy server
-      #{@server_address |> inspect_addr}:#{@server_port}")
+      #{{@server_address, @server_port} |> inspect_peername}")
 
     # TODO: report and handle error can not connect to proxy server
     {:ok, server} =
@@ -93,7 +93,7 @@ defmodule Client do
     # request
     Logger.debug("wait for proxy request")
     {:ok, dst} = :gen_tcp.recv(local_sock, 0)
-    Logger.debug("start request to destination: #{dst |> inspect_addr}:443")
+    Logger.debug("start request to destination: #{{dst, 443} |> inspect_peername}")
 
     :ok =
       :gen_tcp.send(
@@ -179,17 +179,5 @@ defmodule Client do
     |> Tuple.to_list()
     |> Enum.map(&<<&1>>)
     |> Enum.reduce(fn acc, x -> x <> acc end)
-  end
-
-  defp inspect_addr(address) when is_tuple(address) do
-    address
-    |> Tuple.to_list()
-    |> Enum.join(".")
-  end
-
-  defp inspect_addr(address) when is_binary(address) do
-    address
-    |> :binary.bin_to_list()
-    |> Enum.join(".")
   end
 end
