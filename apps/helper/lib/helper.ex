@@ -18,7 +18,7 @@ defmodule Helper do
     inspect_peername(peername)
   end
 
-  def validate_length(packet, expect_len) do
+  def length_valid?(packet, expect_len) do
     expect_len == byte_size(packet)
   end
 end
