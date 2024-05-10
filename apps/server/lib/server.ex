@@ -10,7 +10,7 @@ defmodule Server do
   @server_port Application.compile_env(:server, :local_port)
   @accept_duration 1 * 1000
 
-  def start_link() do
+  def start_link(_args) do
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
 
@@ -29,7 +29,8 @@ defmodule Server do
 
   @impl true
   def handle_continue(:listen, state) do
-    {:ok, socket} = :gen_tcp.listen(@server_port, [:binary, active: true, reuseaddr: true])
+    opts = [:binary, active: true, reuseaddr: true]
+    {:ok, socket} = :gen_tcp.listen(@server_port, opts)
     Logger.debug("listening local server_port: #{@server_port}")
     send(self(), :accept)
     {:noreply, %{state | listen_socket: socket}}
@@ -46,10 +47,4 @@ defmodule Server do
     send(self(), :accept)
     {:noreply, state}
   end
-
-  # @impl true
-  # def handle_info(msg, state) do
-  #   Logger.error("unexpected message: #{inspect(msg)}")
-  #   {:noreply, state}
-  # end
 end
