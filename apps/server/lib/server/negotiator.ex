@@ -1,6 +1,7 @@
 defmodule Server.Negotiator do
+  alias Server.Negotiator
   @timeout 5 * 1000
-  @socks_ver 0x05
+  @socks_version 0x05
 
   # methods list
   @method_no_auth 0x00
@@ -14,34 +15,28 @@ defmodule Server.Negotiator do
   @passwords Application.compile_env(:server, :passwords, %{})
 
   @type t() :: %__MODULE__{
-          version: 0x05,
           method: atom(),
           rule: atom()
         }
-  defstruct version: @socks_ver, method: nil, rule: nil
+  defstruct method: nil, rule: :all
 
-  @spec new(binary(), atom()) :: t()
-  def new(request, rule \\ :all)
-      when is_binary(request) and is_atom(rule) do
-    with methods when is_list(methods) <- Map.get(rule_set(), rule),
-         select_method = select(methods, request) do
-      %Server.Negotiator{method: select_method, rule: rule}
-    else
-      nil ->
-        raise ArgumentError,
-              "invalid rule: #{rule}, " <>
-                "available rules: #{rule_set() |> Map.keys() |> Enum.join(", ")}"
-    end
+  @spec parse(Negotiator.t(), binary()) :: Negotiator.t()
+  def parse(%Negotiator{rule: r} = n, req)
+      when is_binary(req) do
+    methods = Map.fetch!(rule_set(), r)
+    selected = select(methods, req)
+    %Negotiator{n | method: selected}
   end
 
   @spec select([non_neg_integer()], binary()) :: atom()
-  def select(methods, request)
-      when is_binary(request) do
+  defp select(methods, request)
+       when is_binary(request) do
     for m <- methods,
         m in :binary.bin_to_list(request),
         m in enabled() do
       m
     end
+    # reverse in order to choose methods safer than no_auth.
     |> Enum.reverse()
     |> List.first(@method_no_acceptable)
     |> then(&Map.get(methods_map(), &1))
@@ -49,46 +44,41 @@ defmodule Server.Negotiator do
 
   defp enabled do
     for m <- supported(),
+        # this guard filter the user pass method if no passwords set
         m != @method_user_pass or
           map_size(@passwords) > 0,
         do: m
   end
 
-  @spec negotiate(Server.Negotiator.t(), port()) :: :ok | :method_unacceptable | {:error, reason}
+  @spec negotiate(Negotiator.t(), port()) ::
+          :ok | :method_unacceptable | {:error, reason}
         when reason: atom() | {:timeout, binary()}
-  def negotiate(%Server.Negotiator{method: m}, sock)
-      when is_port(sock) and is_atom(m) do
+  def negotiate(%Negotiator{method: m}, sock)
+      when is_port(sock) do
     apply(__MODULE__, m, [sock])
   end
 
   @spec no_auth(port()) :: :ok | {:error, reason}
         when reason: atom() | {:timeout, binary()}
   def no_auth(sock) do
-    :gen_tcp.send(sock, <<@socks_ver, @method_no_auth>>)
+    :gen_tcp.send(sock, <<@socks_version, @method_no_auth>>)
   end
 
   @spec user_pass(port()) :: :ok | {:error, reason}
         when reason: atom() | {:timeout, binary()}
   def user_pass(sock) do
-    with :ok <- :gen_tcp.send(sock, <<@socks_ver, @method_user_pass>>),
+    with :ok <- :gen_tcp.send(sock, <<@socks_version, @method_user_pass>>),
          {:ok, <<@user_pass_version, rest::binary>>} <- :gen_tcp.recv(sock, 0, @timeout),
-         {:ok, {username, password}} <- parse_user_password(rest),
-         true <- check_user_password(username, password) do
+         {username, password} <- parse_user_password(rest),
+         {true, _} <- check_user_password(username, password) do
       :gen_tcp.send(sock, <<@user_pass_version, @auth_success>>)
     else
       {:ok, <<ver, _::binary>>} when ver != @user_pass_version ->
         {:error, :invalid_sub_version}
 
-      {:ok, _} ->
-        {:error, :invalid_packet}
-
-      :error ->
-        # parse_user_password error
-        {:error, :invalid_packet}
-
-      false ->
+      {false, username} ->
         :gen_tcp.send(sock, <<@user_pass_version, @auth_failure>>)
-        {:error, :no_such_user}
+        {:error, :no_such_user, username}
 
       {:error, reason} ->
         {:error, reason}
@@ -98,17 +88,24 @@ defmodule Server.Negotiator do
   @spec no_acceptable(port()) :: :method_unacceptable | {:error, reason}
         when reason: atom() | {:timeout, binary()}
   def no_acceptable(sock) do
-    :gen_tcp.send(sock, <<@socks_ver, @method_no_acceptable>>)
+    :gen_tcp.send(sock, <<@socks_version, @method_no_acceptable>>)
     :method_unacceptable
   end
 
-  defp parse_user_password(<<ulen, rest::binary>>) do
-    <<username::binary-size(ulen), plen, password::binary>> = rest
-    if plen == byte_size(password), do: {:ok, {username, password}}, else: :error
+  defp parse_user_password(<<
+         user_len,
+         user::binary-size(user_len),
+         pass_len,
+         pass::binary-size(pass_len)
+       >>) do
+    {user, pass}
   end
 
   defp check_user_password(username, password) do
-    password == Map.get(@passwords, username)
+    {
+      password == Map.get(@passwords, username),
+      username
+    }
   end
 
   defp supported do

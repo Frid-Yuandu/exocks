@@ -12,12 +12,13 @@ defmodule Server.Handler do
   whole proxy procedure. If the udp mode is chosen, it will wait until the end
   of this procedure.
   """
+  alias Server.ForwardWorker
+  alias Server.Handler
   use GenServer
-  import Helper, only: [inspect_peername: 1, validate_length: 2]
+  import Helper, only: [inspect_peername: 1]
   require Logger
 
-  @socks_ver 0x05
-
+  @socks_version 0x05
   @tcp 0x01
   @bind 0x02
   @udp_associate 0x03
@@ -37,86 +38,90 @@ defmodule Server.Handler do
   @server_port Application.compile_env(:server, :local_port)
   @timeout 5 * 1000
 
-  @type handler() :: %{
-          client: port(),
-          dst: port()
+  @type t() :: %__MODULE__{
+          client: port() | nil,
+          destination: port() | nil,
+          proxy_state: atom()
         }
+  defstruct client: nil, destination: nil, proxy_state: nil
 
   @spec start_link(keyword(port())) :: :ignore | {:error, any()} | {:ok, pid()}
   def start_link(args) do
     GenServer.start_link(__MODULE__, args)
   end
 
-  # Callbacks
+  @impl GenServer
+  def init(args) do
+    client = Keyword.get(args, :client)
 
-  @impl true
-  @spec init(keyword()) :: {:ok, %{client: nil, destination: nil, proxy_state: :not_available}}
-  def init(_args) do
     {:ok,
-     %{
-       client: nil,
+     %Handler{
+       client: client,
        destination: nil,
-       proxy_state: :not_available
+       proxy_state: :available
      }}
   end
 
-  @impl true
-  def handle_cast({:bind, client}, state) do
-    Logger.debug("initialize handler for client: #{inspect_peername(client)}")
-    {:noreply, %{state | client: client, proxy_state: :available}}
-  end
-
   # negotiate
-  @impl true
+  @impl GenServer
   def handle_info(
-        {:tcp, _from, <<@socks_ver, len, methods::binary>> = req},
-        %{client: client, state: :available} = state
+        {:tcp, _from, <<@socks_version, len, methods::binary>> = req},
+        %Handler{client: client, proxy_state: :available} = state
       )
-      when byte_size(req) >= 3 and
-             byte_size(methods) == len do
+      when byte_size(req) >= 3 and byte_size(methods) == len do
     Logger.debug("receive negotiate request: #{req |> inspect}")
 
     with :ok <-
-           methods
-           |> Server.Negotiator.new()
+           %Server.Negotiator{}
+           |> Server.Negotiator.parse(methods)
            |> Server.Negotiator.negotiate(client) do
       Logger.info("negotiate successfully")
-      {:noreply, %{state | proxy_state: :negotiated}}
+      {:noreply, %Handler{state | proxy_state: :negotiated}}
     else
       :method_unacceptable ->
         Logger.info("negotiate methods not acceptable")
         {:stop, :normal, state}
 
+      {:error, :no_such_user, username} ->
+        Logger.error(
+          "negotiate error: user #{username} does not exist." <>
+            "If this error occurs repeatedly, please check your userpass configuration."
+        )
+
+        {:stop, :normal, state}
+
       {:error, reason} ->
-        Logger.error(reason: reason, from: "negotiate")
+        Logger.warning("negotiate failure: #{inspect(reason)}")
         {:stop, :normal, state}
     end
   end
 
   # request
-  @impl true
   def handle_info(
-        {:tcp, _from, <<@socks_ver, cmd, 0x00, atype, addr_port::binary>>},
-        %{client: client, proxy_state: :negotiated} = state
+        {:tcp, _from, <<@socks_version, cmd, 0x00, address_type, uri::binary>>},
+        %Handler{client: client, proxy_state: proxy_state} = state
       )
       when cmd in @support_cmd and
-             byte_size(addr_port) >= 3 and
-             atype in [@ipv4, @ipv6, @domain] do
-    with {addr, port} when addr != :error <- extract_addr_port(addr_port, atype),
+             byte_size(uri) >= 3 and
+             address_type in [@ipv4, @ipv6, @domain] and
+             proxy_state in [:negotiated, :connected] do
+    with {addr, port} <-
+           extract_addr_port(<<address_type, uri::binary>>),
          Logger.debug("receive proxy request, destination: #{inspect_peername({addr, port})}"),
+         opts = [:binary, active: true, reuseaddr: true],
          {:conn_dst, {:ok, dst}} <-
-           {:conn_dst,
-            :gen_tcp.connect(addr, port, [:binary, active: true, reuseaddr: true], @timeout)},
+           {:conn_dst, :gen_tcp.connect(addr, port, opts, @timeout)},
          :ok <- reply(client, @request_succeeded) do
       Logger.info("connect to request destination successfully")
-      send(self(), :forward)
-      {:noreply, %{state | destination: dst}, {:continue, :spawn_forwarder}}
+
+      {:noreply, %Handler{state | destination: dst, proxy_state: :connected},
+       {:continue, :spawn_forwarder}}
     else
-      {:ok, <<@socks_ver, cmd, _::binary>>} when cmd in [@bind, @udp_associate] ->
+      {:ok, <<@socks_version, cmd, _::binary>>} when cmd in [@bind, @udp_associate] ->
         reply(client, @cmd_not_support)
         {:error, :cmd_not_support, state}
 
-      {:ok, <<ver, _::binary>>} when ver != @socks_ver ->
+      {:ok, <<ver, _::binary>>} when ver != @socks_version ->
         {:error, :invalid_version, state}
 
       {:ok, <<_::binary>>} ->
@@ -135,36 +140,50 @@ defmodule Server.Handler do
     end
   end
 
-  def handle_continue(:spawn_forwarder, state) do
-    # TODO: implement me!
-  end
-
-  @impl true
-  # when to spawn a new process to forward?
   def handle_info(
-        :forward,
-        %{client: client, destination: dst, proxy_state: :connected} = state
+        {:tcp, _from, msg},
+        %Handler{destination: d, proxy_state: :connected} = state
       ) do
-    Logger.debug("start communicating with destination")
-    spawn(__MODULE__, :forward, [dst, client])
-    forward(client, dst)
-    {:stop, :normal, state}
+    case :gen_tcp.send(d, msg) do
+      :ok ->
+        {:noreply, state}
+
+      {:error, reason} ->
+        Logger.error(
+          "forward message to" <>
+            " [#{inspect_peername(d)}]" <>
+            " error: #{inspect(reason)}"
+        )
+
+        {:stop, :normal, state}
+    end
   end
 
-  def handle_info({:tcp, :error, err_msg}, state) do
+  def handle_info({:tcp_error, err_msg}, state) do
     Logger.error(err_msg)
     {:stop, :normal, state}
   end
 
-  def handle_info({:tcp, :closed, _}, state) do
-    {:stop, :normal, state}
+  def handle_info({:tcp_closed, _}, state), do: {:stop, :normal, state}
+
+  @impl GenServer
+  def handle_continue(:spawn_forwarder, state) do
+    {:ok, pid} = ForwardWorker.start_link()
+
+    ForwardWorker.bind(pid,
+      client: state.client,
+      destination: state.destination
+    )
+
+    :gen_tcp.controlling_process(state.destination, pid)
+    {:noreply, state}
   end
 
   @spec reply(port(), integer()) :: :ok | {:error, any()}
   def reply(sock, rep) do
     :gen_tcp.send(
       sock,
-      <<@socks_ver, rep, 0x00, @ipv4>> <> bind_addr() <> <<@server_port::16>>
+      <<@socks_version, rep, 0x00, @ipv4>> <> bind_addr() <> <<@server_port::16>>
     )
   end
 
@@ -173,48 +192,46 @@ defmodule Server.Handler do
     @server_addr |> Tuple.to_list() |> :binary.list_to_bin()
   end
 
-  @spec forward(port(), port()) :: :ok
-  def forward(dst, src) do
-    with {:ok, packet} <- :gen_tcp.recv(src, 0),
-         :ok <- :gen_tcp.send(dst, packet) do
-      forward(dst, src)
-    else
-      {:error, :closed} ->
-        :gen_tcp.shutdown(dst, :write)
-        :gen_tcp.close(src)
+  @spec extract_addr_port(binary()) ::
+          {ip | domain_name, integer()}
+        when ip: {non_neg_integer()},
+             domain_name: charlist()
+  def extract_addr_port(<<
+        @ipv4,
+        ipv4_binary::bytes-size(4),
+        port::16
+      >>) do
+    {to_ip_address(ipv4_binary), port}
+  end
 
-      {:error, {:timeout, _}} ->
-        Logger.warning("forward timeout")
+  def extract_addr_port(<<
+        @ipv6,
+        ipv6_binary::bytes-size(16),
+        port::16
+      >>) do
+    {to_ip_address(ipv6_binary), port}
+  end
+
+  def extract_addr_port(<<
+        @domain,
+        len,
+        domain_name::bytes-size(len),
+        port::16
+      >>) do
+    {to_charlist(domain_name), port}
+  end
+
+  def to_ip_address(ip_binary) when byte_size(ip_binary) == 4 do
+    for <<b::8 <- ip_binary>> do
+      b
     end
+    |> List.to_tuple()
   end
 
-  @spec extract_addr_port(binary(), integer()) ::
-          {tuple() | charlist(), integer()} | {:error, :invalid_packet}
-  def extract_addr_port(bin, atype) when is_binary(bin) and atype in [@ipv4, @ipv6] do
-    {parse_addr(bin, :ip), parse_port(bin)}
-  end
-
-  def extract_addr_port(<<len, url_port::binary>>, atype) when atype == @domain do
-    if validate_length(url_port, len + 2) do
-      {parse_addr(url_port, :domain), parse_port(url_port)}
-    else
-      {:error, :invalid_packet}
+  def to_ip_address(ip_binary) when byte_size(ip_binary) == 16 do
+    for <<b::16 <- ip_binary>> do
+      b
     end
+    |> List.to_tuple()
   end
-
-  @spec parse_addr(binary(), :ip | :domain) :: tuple() | charlist()
-  defp parse_addr(bin, :domain), do: bin |> :binary.part(0, byte_size(bin) - 2) |> to_charlist
-
-  defp parse_addr(bin, :ip) do
-    {:ok, addr} =
-      bin
-      |> :binary.bin_to_list(0, byte_size(bin) - 2)
-      |> Enum.join(".")
-      |> to_charlist
-      |> :inet.parse_address()
-
-    addr
-  end
-
-  def parse_port(bin), do: bin |> :binary.part(byte_size(bin), -2) |> :binary.decode_unsigned()
 end
