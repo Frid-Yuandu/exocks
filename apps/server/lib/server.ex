@@ -29,7 +29,7 @@ defmodule Server do
 
   @impl true
   def handle_continue(:listen, state) do
-    opts = [:binary, active: true, reuseaddr: true]
+    opts = [:binary, active: :once, reuseaddr: true]
     {:ok, socket} = :gen_tcp.listen(@server_port, opts)
     Logger.debug("listening local server_port: #{@server_port}")
     send(self(), :accept)

@@ -1,19 +1,17 @@
 defmodule Server.Handler do
   @moduledoc """
   This module handles the proxy procedure of each connection.
-  
+
   ## Features
   It controls the primary connection to negotiate and authenticate with the
   client, act as a proxy agent and forward data between the client and the
   destination.
-  
+
   ## Life Cycle
   It starts by accepting the connection from the client until the end of the
   whole proxy procedure. If the udp mode is chosen, it will wait until the end
   of this procedure.
   """
-  alias Server.ForwardWorker
-  alias Server.Handler
   use GenServer
   import Helper, only: [inspect_peername: 1]
   require Logger
@@ -55,7 +53,7 @@ defmodule Server.Handler do
     client = Keyword.get(args, :client)
 
     {:ok,
-     %Handler{
+     %Server.Handler{
        client: client,
        destination: nil,
        proxy_state: :available
@@ -66,7 +64,7 @@ defmodule Server.Handler do
   @impl GenServer
   def handle_info(
         {:tcp, _from, <<@socks_version, len, methods::binary>> = req},
-        %Handler{client: client, proxy_state: :available} = state
+        %Server.Handler{client: client, proxy_state: :available} = state
       )
       when byte_size(req) >= 3 and byte_size(methods) == len do
     Logger.debug("receive negotiate request: #{req |> inspect}")
@@ -76,7 +74,8 @@ defmodule Server.Handler do
            |> Server.Negotiator.parse(methods)
            |> Server.Negotiator.negotiate(client) do
       Logger.info("negotiate successfully")
-      {:noreply, %Handler{state | proxy_state: :negotiated}}
+      :inet.setopts(client, active: :once)
+      {:noreply, %Server.Handler{state | proxy_state: :negotiated}}
     else
       :method_unacceptable ->
         Logger.info("negotiate methods not acceptable")
@@ -99,7 +98,7 @@ defmodule Server.Handler do
   # request
   def handle_info(
         {:tcp, _from, <<@socks_version, cmd, 0x00, address_type, uri::binary>>},
-        %Handler{client: client, proxy_state: proxy_state} = state
+        %Server.Handler{client: client, proxy_state: proxy_state} = state
       )
       when cmd in @support_cmd and
              byte_size(uri) >= 3 and
@@ -108,50 +107,55 @@ defmodule Server.Handler do
     with {addr, port} <-
            extract_addr_port(<<address_type, uri::binary>>),
          Logger.debug("receive proxy request, destination: #{inspect_peername({addr, port})}"),
-         opts = [:binary, active: true, reuseaddr: true],
+         opts = [:binary, active: :once, reuseaddr: true],
          {:conn_dst, {:ok, dst}} <-
            {:conn_dst, :gen_tcp.connect(addr, port, opts, @timeout)},
          :ok <- reply(client, @request_succeeded) do
       Logger.info("connect to request destination successfully")
+      :inet.setopts(client, active: :once)
 
-      {:noreply, %Handler{state | destination: dst, proxy_state: :connected},
+      {:noreply, %Server.Handler{state | destination: dst, proxy_state: :connected},
        {:continue, :spawn_forwarder}}
     else
       {:ok, <<@socks_version, cmd, _::binary>>} when cmd in [@bind, @udp_associate] ->
         reply(client, @cmd_not_support)
-        {:error, :cmd_not_support, state}
+        :inet.setopts(client, active: :once)
+        {:noreply, state}
 
       {:ok, <<ver, _::binary>>} when ver != @socks_version ->
-        {:error, :invalid_version, state}
+        {:noreply, state}
 
       {:ok, <<_::binary>>} ->
-        {:error, :invalid_packet, state}
+        {:noreply, state}
 
       {:recv_req, {:error, :timeout}} ->
-        {:error, :no_request, state}
+        {:noreply, state}
 
       {:conn_dst, {:error, :timeout}} ->
         reply(client, @host_unreachable)
-        {:error, :host_unreach, state}
+        :inet.setopts(client, active: :once)
+        {:noreply, state}
 
-      {:error, reason} ->
+      {:error, _reason} ->
         reply(client, @network_unreachable)
-        {:error, reason, state}
+        :inet.setopts(client, active: :once)
+        {:noreply, state}
     end
   end
 
   def handle_info(
         {:tcp, _from, msg},
-        %Handler{destination: d, proxy_state: :connected} = state
+        %Server.Handler{client: client, destination: dst, proxy_state: :connected} = state
       ) do
-    case :gen_tcp.send(d, msg) do
+    case :gen_tcp.send(dst, msg) do
       :ok ->
+        :inet.setopts(client, active: :once)
         {:noreply, state}
 
       {:error, reason} ->
         Logger.error(
           "forward message to" <>
-            " [#{inspect_peername(d)}]" <>
+            " [#{inspect_peername(dst)}]" <>
             " error: #{inspect(reason)}"
         )
 
@@ -168,9 +172,9 @@ defmodule Server.Handler do
 
   @impl GenServer
   def handle_continue(:spawn_forwarder, state) do
-    {:ok, pid} = ForwardWorker.start_link()
+    {:ok, pid} = Server.ForwardWorker.start_link()
 
-    ForwardWorker.bind(pid,
+    Server.ForwardWorker.bind(pid,
       client: state.client,
       destination: state.destination
     )

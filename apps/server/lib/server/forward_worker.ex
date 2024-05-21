@@ -43,6 +43,7 @@ defmodule Server.ForwardWorker do
       when not is_nil(c) and not is_nil(d) do
     case :gen_tcp.send(c, msg) do
       :ok ->
+        :inet.setopts(d, active: :once)
         {:noreply, state}
 
       {:error, :closed} ->
