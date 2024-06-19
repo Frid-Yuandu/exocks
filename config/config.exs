@@ -11,8 +11,8 @@ import Config
 
 config :client,
   local_port: 8899,
-  remote_address: {127, 0, 0, 1},
-  remote_port: 6716
+  server_address: {127, 0, 0, 1},
+  server_port: 6716
 
 config :server,
   local_address: {127, 0, 0, 1},
@@ -29,7 +29,7 @@ config :logger,
   ]
 
 config :logger, :console,
-  level: :info,
+  level: :debug,
   format: "$time [$level] $message\n"
 
 config :logger, :client_log,
