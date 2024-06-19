@@ -1,7 +1,8 @@
 defmodule NegotiatorTest do
-  alias Server.Negotiator
   use ExUnit.Case
   doctest Server.Negotiator
+
+  alias Server.Negotiator
 
   setup_all do
     {:ok, ls} = :gen_tcp.listen(6716, [:binary, active: false, reuseaddr: true])
