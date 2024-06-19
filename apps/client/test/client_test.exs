@@ -2,42 +2,57 @@ defmodule ClientTest do
   use ExUnit.Case
   doctest Client
 
-  test "total proxy procedure" do
-    spawn(fn ->
-      Client.start()
-    end)
+  @client_port Application.compile_env(:client, :local_port)
+  @server_port Application.compile_env(:client, :server_port)
 
-    spawn(fn ->
-      {:ok, socket} = :gen_tcp.listen(6716, [:binary, active: false, reuseaddr: true])
-      {:ok, client} = :gen_tcp.accept(socket)
+  setup_all do
+    {:ok, _} = Client.start_link([])
+    on_exit(:stop_client, fn -> Client.stop() end)
 
-      {:ok, <<0x05, 0x01, 0x00>>} = :gen_tcp.recv(client, 0)
-      :ok = :gen_tcp.send(client, <<0x05, 0x00>>)
+    opts = [:binary, active: false, reuseaddr: true]
+    {:ok, server_listen} = :gen_tcp.listen(@server_port, opts)
+    on_exit(:stop_server, fn -> :gen_tcp.close(server_listen) end)
 
-      {:ok, <<0x05, 0x01, 0x00, 0x01, 183, 2, 172, 42, 443::16>>} =
-        :gen_tcp.recv(client, 0)
+    %{server_listen: server_listen}
+  end
 
-      :ok = :gen_tcp.send(client, <<0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 6716::16>>)
+  test "should proxy no auth, ipv4, tcp", %{server_listen: ls} do
+    dst = <<127, 0, 0, 1, 4321::16>>
+    msg_sent = "ping"
+    msg_wanted = "pong"
+
+    Task.start_link(fn ->
+      # this is the proxy server
+      {:ok, client} = :gen_tcp.accept(ls)
+
+      {:ok, <<5, 1, 0>>} = :gen_tcp.recv(client, 0)
+      :ok = :gen_tcp.send(client, <<5, 0>>)
+
+      {:ok, <<5, 1, 0, 1, ^dst::binary>>} = :gen_tcp.recv(client, 0)
+      :ok = :gen_tcp.send(client, <<5, 0, 0, 1, 127, 0, 0, 1, @server_port::16>>)
 
       assert {:ok, "ping"} = :gen_tcp.recv(client, 0)
       :ok = :gen_tcp.send(client, "pong")
-      assert {:ok, "hello"} = :gen_tcp.recv(client, 0)
-      :ok = :gen_tcp.send(client, "world")
     end)
 
-    {:ok, local} =
-      :gen_tcp.connect(
-        {127, 0, 0, 1},
-        8899,
-        [:binary, active: false, reuseaddr: true]
-      )
+    client = connect_to_exocks()
 
-    :gen_tcp.send(local, <<183, 2, 172, 42>>)
+    Process.sleep(100)
+    :ok = :gen_tcp.send(client, dst)
 
-    :gen_tcp.send(local, "ping")
-    assert {:ok, "pong"} = :gen_tcp.recv(local, 0)
+    Process.sleep(100)
+    client |> send_recv(send: msg_sent, wanted: {:ok, msg_wanted})
+  end
 
-    :gen_tcp.send(local, "hello")
-    assert {:ok, "world"} = :gen_tcp.recv(local, 0)
+  defp connect_to_exocks() do
+    opts = [:binary, active: false, reuseaddr: true]
+    {:ok, client} = :gen_tcp.connect(:localhost, @client_port, opts)
+    client
+  end
+
+  defp send_recv(sock, send: sent, wanted: wanted) do
+    :ok = :gen_tcp.send(sock, sent)
+    assert wanted == :gen_tcp.recv(sock, 0)
+    sock
   end
 end

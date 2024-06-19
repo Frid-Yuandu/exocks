@@ -17,7 +17,8 @@ defmodule Exocks.MixProject do
   # Run "mix help deps" for examples and options.
   defp deps do
     [
-      {:logger_file_backend, "~> 0.0.13"}
+      {:logger_file_backend, "~> 0.0.13"},
+      {:poolboy, "~> 1.5.2"},
     ]
   end
 end
