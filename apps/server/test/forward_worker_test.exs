@@ -22,10 +22,12 @@ defmodule ForwardWorkerTest do
     %{forward_worker: fw, listen_sock: ls}
   end
 
+  @dst_port 4321
+
   test "should bind successfully", %{forward_worker: fw, listen_sock: ls} do
     Task.start(fn ->
       # this is the server
-      {:ok, ls} = :gen_tcp.listen(443, opts())
+      {:ok, ls} = :gen_tcp.listen(@dst_port, opts())
       {:ok, proxy} = :gen_tcp.accept(ls)
       :gen_tcp.close(proxy)
     end)
@@ -37,7 +39,7 @@ defmodule ForwardWorkerTest do
     end)
 
     {:ok, client} = :gen_tcp.accept(ls)
-    {:ok, server} = :gen_tcp.connect(:localhost, 443, opts())
+    {:ok, server} = :gen_tcp.connect(:localhost, @dst_port, opts())
 
     close(client, server)
 
@@ -53,7 +55,7 @@ defmodule ForwardWorkerTest do
   test "should forward from server successfully", %{forward_worker: fw, listen_sock: ls} do
     Task.start(fn ->
       # this is the server
-      {:ok, ls} = :gen_tcp.listen(443, opts())
+      {:ok, ls} = :gen_tcp.listen(@dst_port, opts())
       {:ok, proxy} = :gen_tcp.accept(ls)
       assert :ok = :gen_tcp.send(proxy, "ping")
       :gen_tcp.close(proxy)
@@ -67,7 +69,7 @@ defmodule ForwardWorkerTest do
     end)
 
     {:ok, client} = :gen_tcp.accept(ls)
-    {:ok, server} = :gen_tcp.connect(:localhost, 443, opts(active: true))
+    {:ok, server} = :gen_tcp.connect(:localhost, @dst_port, opts(active: true))
 
     close(client, server)
 
@@ -77,7 +79,7 @@ defmodule ForwardWorkerTest do
   test "should forward from client failed", %{forward_worker: fw, listen_sock: ls} do
     Task.start(fn ->
       # this is the server
-      {:ok, ls} = :gen_tcp.listen(443, opts())
+      {:ok, ls} = :gen_tcp.listen(@dst_port, opts())
       {:ok, proxy} = :gen_tcp.accept(ls)
       assert {:error, :timeout} == :gen_tcp.recv(proxy, 0)
       :gen_tcp.close(proxy)
@@ -91,7 +93,7 @@ defmodule ForwardWorkerTest do
     end)
 
     {:ok, client} = :gen_tcp.accept(ls)
-    {:ok, server} = :gen_tcp.connect(:localhost, 443, opts(active: true))
+    {:ok, server} = :gen_tcp.connect(:localhost, @dst_port, opts(active: true))
 
     close(client, server)
 
