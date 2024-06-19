@@ -50,12 +50,11 @@ defmodule Server.Handler do
 
   @impl GenServer
   def init(args) do
-    client = Keyword.get(args, :client)
+    client = Keyword.fetch!(args, :client)
 
     {:ok,
      %Server.Handler{
        client: client,
-       destination: nil,
        proxy_state: :available
      }}
   end

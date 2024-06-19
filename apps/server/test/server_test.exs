@@ -1,12 +1,13 @@
 defmodule ServerTest do
   use ExUnit.Case
+  import TestHelper, only: [connect_to_exocks: 0, send_recv: 2]
   doctest Server
 
-  # @timeout 6 * 1000
   @server_port Application.compile_env(:server, :local_port)
 
   @no_auth 0x00
   @userpass 0x02
+  @no_acceptable 0xFF
   @user_pass_version 0x01
 
   @socks_version 0x05
@@ -31,8 +32,8 @@ defmodule ServerTest do
     command = @tcp
     uri = <<127, 0, 0, 1, 14579::16>>
 
-    neg_sent = <<@socks_version, 1, 0>>
-    neg_wanted = <<@socks_version, 0>>
+    neg_sent = <<@socks_version, 1, @no_auth>>
+    neg_wanted = <<@socks_version, @no_auth>>
     req_sent = <<@socks_version, command, 0, address_type, uri::binary>>
     req_wanted = <<@socks_version, @req_succeeded, 0, @ipv4, 127, 0, 0, 1, @server_port::16>>
     msg_sent = "ping"
@@ -85,11 +86,7 @@ defmodule ServerTest do
     |> :gen_tcp.close()
   end
 
-  test "should not proxy with wrong userpass, ipv4, tcp connect", %{listen_sock: ls} do
-    address_type = @ipv4
-    command = @tcp
-    uri = <<127, 0, 0, 1, 14579::16>>
-
+  test "should not proxy with wrong userpass, ipv4, tcp connect", %{} do
     neg_sent = <<@socks_version, 1, @userpass>>
     neg_wanted = <<@socks_version, @userpass>>
     userpass_sent = <<@user_pass_version, 8, "username", 8, "password">>
@@ -101,24 +98,12 @@ defmodule ServerTest do
     |> :gen_tcp.close()
   end
 
-  test "should proxy with no acceptable", %{listen_sock: ls} do
+  test "should proxy with no acceptable", %{} do
     neg_sent = <<@socks_version, 2, 1, 3>>
-    neg_wanted = <<@socks_version, 0xFF>>
+    neg_wanted = <<@socks_version, @no_acceptable>>
 
     connect_to_exocks()
     |> send_recv(send: neg_sent, wanted: {:ok, neg_wanted})
     |> :gen_tcp.close()
-  end
-
-  defp connect_to_exocks do
-    opts = [:binary, active: false, reuseaddr: true]
-    {:ok, sock} = :gen_tcp.connect(:localhost, @server_port, opts)
-    sock
-  end
-
-  defp send_recv(sock, send: sent, wanted: wanted) do
-    :ok = :gen_tcp.send(sock, sent)
-    assert wanted == :gen_tcp.recv(sock, 0)
-    sock
   end
 end

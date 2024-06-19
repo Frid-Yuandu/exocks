@@ -11,6 +11,7 @@ defmodule Server do
   @accept_duration 1 * 1000
 
   def start_link(_args) do
+    Logger.debug("starting server...")
     GenServer.start_link(__MODULE__, [], name: __MODULE__)
   end
 
@@ -23,7 +24,6 @@ defmodule Server do
 
   @impl true
   def init(_args) do
-    Logger.debug("starting server...")
     {:ok, %{listen_socket: nil}, {:continue, :listen}}
   end
 
