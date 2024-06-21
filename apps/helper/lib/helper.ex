@@ -1,7 +1,7 @@
 defmodule Helper do
-  @spec inspect_peername(peer) :: binary()
-        when peer: port() | {ip | domain_name, non_neg_integer()},
-             ip: {non_neg_integer()},
+  @spec inspect_peername(peer) :: String.t()
+        when peer: port() | {ip | domain_name, 0..65535},
+             ip: :inet.ip_address(),
              domain_name: charlist()
   def inspect_peername({ip, port})
       when tuple_size(ip) == 4 do
@@ -27,8 +27,8 @@ defmodule Helper do
   @ipv6 0x04
 
   @spec extract_addr_port(binary()) ::
-          {ip | domain_name, integer()}
-        when ip: {non_neg_integer()},
+          {ip | domain_name, 0..65535}
+        when ip: :inet.ip_address(),
              domain_name: charlist()
   def extract_addr_port(<<
         @ipv4,
@@ -55,7 +55,8 @@ defmodule Helper do
     {to_charlist(domain_name), port}
   end
 
-  @spec to_ip_address(binary()) :: {non_neg_integer()}
+  @spec to_ip_address(binary()) :: ip
+        when ip: :inet.ip_address()
   def to_ip_address(ip_binary) when byte_size(ip_binary) == 4 do
     for <<b::8 <- ip_binary>> do
       b
