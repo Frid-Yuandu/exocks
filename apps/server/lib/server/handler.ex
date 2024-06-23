@@ -13,7 +13,7 @@ defmodule Server.Handler do
   of this procedure.
   """
   use GenServer
-  import Helper, only: [inspect_peername: 1]
+  import Helper, only: [inspect_peername: 1, extract_addr_port: 1]
   require Logger
 
   @socks_version 0x05
@@ -171,7 +171,7 @@ defmodule Server.Handler do
 
   @impl GenServer
   def handle_continue(:spawn_forwarder, state) do
-    {:ok, pid} = Server.ForwardWorker.start_link()
+    {:ok, pid} = Server.ForwardWorker.start_link([])
 
     Server.ForwardWorker.bind(pid,
       client: state.client,
@@ -193,48 +193,5 @@ defmodule Server.Handler do
   @spec bind_addr() :: binary()
   defp bind_addr do
     @server_addr |> Tuple.to_list() |> :binary.list_to_bin()
-  end
-
-  @spec extract_addr_port(binary()) ::
-          {ip | domain_name, integer()}
-        when ip: {non_neg_integer()},
-             domain_name: charlist()
-  def extract_addr_port(<<
-        @ipv4,
-        ipv4_binary::bytes-size(4),
-        port::16
-      >>) do
-    {to_ip_address(ipv4_binary), port}
-  end
-
-  def extract_addr_port(<<
-        @ipv6,
-        ipv6_binary::bytes-size(16),
-        port::16
-      >>) do
-    {to_ip_address(ipv6_binary), port}
-  end
-
-  def extract_addr_port(<<
-        @domain,
-        len,
-        domain_name::bytes-size(len),
-        port::16
-      >>) do
-    {to_charlist(domain_name), port}
-  end
-
-  def to_ip_address(ip_binary) when byte_size(ip_binary) == 4 do
-    for <<b::8 <- ip_binary>> do
-      b
-    end
-    |> List.to_tuple()
-  end
-
-  def to_ip_address(ip_binary) when byte_size(ip_binary) == 16 do
-    for <<b::16 <- ip_binary>> do
-      b
-    end
-    |> List.to_tuple()
   end
 end
