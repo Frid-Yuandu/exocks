@@ -19,6 +19,7 @@ defmodule Exocks.MixProject do
     [
       {:logger_file_backend, "~> 0.0.13"},
       {:poolboy, "~> 1.5.2"},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false}
     ]
   end
 end
